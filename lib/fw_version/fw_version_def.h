@@ -1,1 +1,1 @@
-#define FW_VERSION 00,000,495 
+#define FW_VERSION 00,000,499

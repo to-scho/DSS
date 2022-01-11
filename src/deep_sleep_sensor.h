@@ -33,12 +33,16 @@
 
 #define BATTERY_MAH 1000
 #define VCC_HTTP_UPDATE_MIN_V 2.7
-#define VCC_ERROR_MIN_V 2.4
+#define VCC_ERROR_MIN_V 2.6
+#define VCC_SHUTDOWN_MIN_V 2.5
+
+#define MQTT_SEND_VCC_PLAIN true
 
 #define VCC_READ_1V (1024.0*0.916) // fix for ESP8266-Arduino release 2.3.0 (SDK 1.5.3)
 //#define VCC_READ_1V 1024.0
 #define VCC_HTTP_UPDATE_MIN_READ ((uint16_t)(VCC_HTTP_UPDATE_MIN_V*VCC_READ_1V))
 #define VCC_ERROR_MIN_READ ((uint16_t)(VCC_ERROR_MIN_V*VCC_READ_1V))
+#define VCC_SHUTDOWN_MIN_READ ((uint16_t)(VCC_SHUTDOWN_MIN_V*VCC_READ_1V))
 
 #define ERROR_TASK_STAT_CNT_ESPWWIFISTAT_SINCE_LAST_SUCCESS 3 // buzzer alert after fails
 #define ERROR_TASK_STAT_CNT_WIFISTAT_SINCE_LAST_SUCCESS 2 // buzzer alert after fails

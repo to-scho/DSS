@@ -40,6 +40,7 @@
 #define STATE_ERROR_HTTPUPDATE_VCC (1<<21)
 #define STATE_ERROR_MAIL (1<<22)
 #define STATE_ERROR_NTP (1<<23)
+#define STATE_SHUTDOWN_VCC (1<<24)
 
 /* user data structs -------------------------------------------------------- */
 typedef uint16_t bin_vector_16;

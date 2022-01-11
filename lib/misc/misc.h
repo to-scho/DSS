@@ -5,6 +5,9 @@
 
 #define NUMEL(_x)  (sizeof(_x) / sizeof((_x)[0]))
 
+#define __TO_STRING(__name) #__name
+#define TO_STRING(__name) __TO_STRING(__name)
+
 /* Number of bits in inttype_MAX, or in any (1<<k)-1 where 0 <= k < 2040 */
 #define IMAX_BITS(_m) ((_m)/((_m)%255+1) / 255%255*8 + 7-86/((_m)%255+12))
 

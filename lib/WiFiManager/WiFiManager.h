@@ -40,7 +40,7 @@ const char HTTP_SCAN_LINK[] PROGMEM       = "<br/><div class=\"c\"><a href=\"/wi
 const char HTTP_SAVED[] PROGMEM           = "<div>Credentials Saved<br />Trying to connect ESP to network.<br />If it fails reconnect to AP to try again</div>";
 const char HTTP_END[] PROGMEM             = "</div></body></html>";
 
-#define WIFI_MANAGER_MAX_PARAMS 20
+#define WIFI_MANAGER_MAX_PARAMS 22
 
 class WiFiManagerParameter {
   public:

@@ -18,7 +18,7 @@ bool eeprommem_write_config(bool calc_crc32) {
 };
 
 bool eeprommem_write_config() {
-  eeprommem_write_config(true);
+  return eeprommem_write_config(true);
 }
 
 bool eeprommem_read_config() {
@@ -32,6 +32,8 @@ bool eeprommem_read_config() {
   DEBUG_BY_LEVEL_PRINT(4, F("eeprommem_read_config: CRC32 calculated to ")); DEBUG_BY_LEVEL_PRINTLN(4,crc32_calc, HEX);
   if (crc32_calc == eeprommem_config.crc32) {
     DEBUG_BY_LEVEL_PRINTLN(2, F("eeprommem_read_config: CRC32 matched"));
+    if (eeprommem_config.data.vcc_error_min_read==0) eeprommem_config.data.vcc_error_min_read = VCC_ERROR_MIN_READ;
+    if (eeprommem_config.data.vcc_shutdown_min_read==0) eeprommem_config.data.vcc_shutdown_min_read = VCC_SHUTDOWN_MIN_READ;
     return true;
   } else {
     DEBUG_PRINTLN(F("eeprommem_read_config: eeprom CRC missmatch"));

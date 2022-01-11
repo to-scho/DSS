@@ -2,6 +2,7 @@
 #define _EEPROMMEM
 #include <Arduino.h>
 #include "misc.h"
+#include "deep_sleep_sensor.h"
 
 #define POW2_CEIL(v) (1 + \
 (((((((((v) - 1) | (((v) - 1) >> 0x10) | \
@@ -39,7 +40,9 @@
   EXP_EEPROMMEM_CONFIG_DATA_MEMBER(char, smtpPass,        65, "") \
   EXP_EEPROMMEM_CONFIG_DATA_MEMBER(char, smtpTo,          33, "") \
   EXP_EEPROMMEM_CONFIG_DATA_MEMBER(char, ntpServer,       33, "de.pool.ntp.org") \
-  EXP_EEPROMMEM_CONFIG_DATA_MEMBER(char, httpUpdateServer,65, "")
+  EXP_EEPROMMEM_CONFIG_DATA_MEMBER(char, httpUpdateServer,61, "") \
+  EXP_EEPROMMEM_CONFIG_DATA_MEMBER(uint16_t, vcc_error_min_read,      , VCC_ERROR_MIN_READ) \
+  EXP_EEPROMMEM_CONFIG_DATA_MEMBER(uint16_t, vcc_shutdown_min_read,   , VCC_SHUTDOWN_MIN_READ)
 
 typedef struct eeprommem_config_data_s {
     #define EXP_EEPROMMEM_CONFIG_DATA_MEMBER(type, member, array, init) IF_ELSE(array)(type member[array] = init)(type member = init);

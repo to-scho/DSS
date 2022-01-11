@@ -35,6 +35,7 @@ const TONE tone_wifi_manager_closed[]  = {{TONE_B, 200}, {TONE_OFF,  50}, {TONE_
 const TONE tone_ota_update[]           = {{TONE_G, 100}, {TONE_OFF,  50}, {TONE_B, 100}, {TONE_OFF, 200}, {TONE_G, 100}, {TONE_OFF,  50}, {TONE_B, 100}, {0, 0}};
 const TONE tone_restore_rtcmem[]       = {{TONE_B, 100}, {TONE_OFF,  50}, {TONE_G, 100}, {TONE_OFF, 200}, {TONE_B, 100}, {TONE_OFF,  50}, {TONE_G, 100}, {0, 0}};
 const TONE tone_error[]                = {{TONE_B, 150}, {TONE_OFF,  50}, {TONE_G,  500}, {0, 0}};
+const TONE tone_battery_error[]        = {{TONE_G, 250}, {TONE_OFF,  50}, {TONE_G,  250}, {0, 0}};
 
 //flag for saving data from WifiManager
 bool shouldSaveConfig = false;
@@ -107,6 +108,10 @@ void httpUdateServerCheck(uint16_t vcc) {
               case HTTP_UPDATE_NO_UPDATES:
                 DEBUG_PRINTLN(F("HTTP_UPDATE_NO_UPDATES"));
                 break;
+
+              default:
+                break;
+
             }
           } else {
             DEBUG_PRINTLN(F("Failed to store RTCMEM to MQTT"));
@@ -311,6 +316,24 @@ void callWiFiManager()
   WiFiManagerParameter custom_http_update_server(custom_http_update_server_id_str.c_str(), custom_http_update_server_ph_str.c_str(), eeprommem_config.data.httpUpdateServer, NUMEL(eeprommem_config.data.httpUpdateServer));
   wifiManager.addParameter(&custom_http_update_server);
 
+  String custom_voltage_custom_str = String(F("<br/>Battery Voltage Thresholds.<br/>Empty for default " TO_STRING(VCC_ERROR_MIN_V) "/" TO_STRING(VCC_SHUTDOWN_MIN_V) " V"));
+  WiFiManagerParameter custom_voltage_text(custom_voltage_custom_str.c_str());
+  wifiManager.addParameter(&custom_voltage_text);
+
+  dtostrf((float)eeprommem_config.data.vcc_error_min_read/VCC_READ_1V, 4, 2, buf_port);
+  String custom_vcc_error_min_read_id_str = String(F("vccMinError"));
+  String custom_vcc_error_min_read_ph_str = String(F("V"));
+  WiFiManagerParameter custom_vcc_error_min_read(custom_vcc_error_min_read_id_str.c_str(), custom_vcc_error_min_read_ph_str.c_str(), buf_port, NUMEL(buf_port));
+  wifiManager.addParameter(&custom_vcc_error_min_read);
+
+  dtostrf((float)eeprommem_config.data.vcc_shutdown_min_read/VCC_READ_1V, 4, 2, buf_port);
+  String custom_vcc_shutdown_min_read_id_str = String(F("vccMinShutDown"));
+  String custom_vcc_shutdown_min_read_ph_str = String(F("V"));
+  WiFiManagerParameter custom_vcc_shutdown_min_read(custom_vcc_shutdown_min_read_id_str.c_str(), custom_vcc_shutdown_min_read_ph_str.c_str(), buf_port, NUMEL(buf_port));
+  wifiManager.addParameter(&custom_vcc_shutdown_min_read);
+
+  // see WiFiManager.h: #define WIFI_MANAGER_MAX_PARAMS 22
+
   // set config save notify callback
   wifiManager.setSaveConfigCallback(saveConfigCallback);
   // set reset callback
@@ -341,6 +364,8 @@ void callWiFiManager()
     strcpy(eeprommem_config.data.smtpTo, custom_smtp_to.getValue());
     strcpy(eeprommem_config.data.ntpServer, custom_ntp_server.getValue());
     strcpy(eeprommem_config.data.httpUpdateServer, custom_http_update_server.getValue());
+    eeprommem_config.data.vcc_error_min_read = ((uint16_t)(atof(custom_vcc_error_min_read.getValue())*VCC_READ_1V));
+    eeprommem_config.data.vcc_shutdown_min_read = ((uint16_t)(atof(custom_vcc_shutdown_min_read.getValue())*VCC_READ_1V));
 
     if (wifiManager.getSSID().c_str()[0]!='\0') {
       DEBUG_PRINTLN(F("WifiManager new SSID & PASS configured"));
@@ -366,14 +391,20 @@ void callWiFiManager()
   }
 }
 
-void checkForErrors(uint16_t vcc) {
-  if (vcc < rtcmem_state.data.vccMin) rtcmem_state.data.vccMin = vcc;
-  if (vcc > rtcmem_state.data.vccMax) rtcmem_state.data.vccMax = vcc;
+void checkForErrors(uint16_t vcc, bool mailErrorAlert, bool buzzerErrorAlert) {
+  if (vcc) {
+    // vcc is 0 when rfon = false
+    if (vcc < rtcmem_state.data.vccMin) rtcmem_state.data.vccMin = vcc;
+    if (vcc > rtcmem_state.data.vccMax) rtcmem_state.data.vccMax = vcc;
+    if (rtcmem_state.data.vccMin<eeprommem_config.data.vcc_shutdown_min_read) {
+      rtcmem_token.state |= STATE_SHUTDOWN_VCC;
+    }
+  }
 
   // check for errors needing attention
   uint32_t state_error_tmp = 0;
   // check errors that are signalled by Mail
-  if (vcc < VCC_ERROR_MIN_V) {
+  if (rtcmem_state.data.vccMin < eeprommem_config.data.vcc_error_min_read) {
     state_error_tmp |= STATE_ERROR_VCC;
     DEBUG_PRINT(F("VCC is low: ")); DEBUG_PRINT((float)vcc/VCC_READ_1V); DEBUG_PRINTLN(F("V\n"));
   }
@@ -402,19 +433,25 @@ void checkForErrors(uint16_t vcc) {
     DEBUG_PRINTLN(F("Too many NTP errors in a row!"));
   }
 
-  if ((state_error_tmp & STATE_ERROR_NOTIFY_BY_MAIL) && ((rtcmem_state.data.mailOnErrorDwnCntHours==0)||((state_error_tmp & (~rtcmem_token.state) & STATE_ERROR_NOTIFY_BY_MAIL)))) {
+  if ((mailErrorAlert) && (state_error_tmp & STATE_ERROR_NOTIFY_BY_MAIL) && ((rtcmem_state.data.mailOnErrorDwnCntHours==0)||((state_error_tmp & (~rtcmem_token.state) & STATE_ERROR_NOTIFY_BY_MAIL)))) {
     // errors need to be signalled by Mail
     rtcmem_state.data.mailOnErrorDwnCntHours = MAIL_ERROR_HOURS;
     rtcmem_token.state |= STATE_TASK_SEND_MAIL_STATUS_UPDATE;
+  } else {
+    DEBUG_PRINTLN(F("Mail not enabled to send error"));
   }
-  if (state_error_tmp & STATE_ERROR_NOTIFY_BY_BUZZER) {
+  if ((buzzerErrorAlert) && (state_error_tmp & STATE_ERROR_NOTIFY_BY_BUZZER)) {
     // errors need to be signalled by Buzzer
-    buzzer_music(tone_error);
+    if (state_error_tmp & STATE_ERROR_VCC) {
+      buzzer_music(tone_battery_error);
+    } else {
+      buzzer_music(tone_error);
+    }
     blinker_start(10,50,1,0);
     delay(700);
+  } else {
+    DEBUG_PRINTLN(F("Buzzer not enabled to signal error"));
   }
-
-  rtcmem_token.state &= ~STATE_ERROR_ALL;
   rtcmem_token.state |= state_error_tmp;
 }
 
@@ -640,13 +677,19 @@ void mqttUpdate(PubSubClient &mqttClient, uint16_t vcc) {
       }
       success &= this_success;
       if (this_success) {DEBUG_BY_LEVEL_PRINTLN(4,F("MQTT publish success"));} else {DEBUG_PRINTLN(F("MQTT publish error"));}
-      if (vcc < VCC_ERROR_MIN_V)  {
-        DEBUG_PRINT(F("MQTT publish ")); DEBUG_PRINT(eeprommem_config.data.mqttBatteryTopic); DEBUG_PRINTLN(F(" nok"));
-        this_success = mqttClient.publish(eeprommem_config.data.mqttBatteryTopic, "nok", false);
-      } else {
-        DEBUG_PRINT(F("MQTT publish ")); DEBUG_PRINT(eeprommem_config.data.mqttBatteryTopic); DEBUG_PRINTLN(F(" ok"));
-        this_success = mqttClient.publish(eeprommem_config.data.mqttBatteryTopic, "ok", false);
-      }
+      #ifdef MQTT_SEND_VCC_PLAIN
+        String vccString = String((float)vcc/VCC_READ_1V);
+        DEBUG_PRINT(F("MQTT publish ")); DEBUG_PRINT(eeprommem_config.data.mqttBatteryTopic); DEBUG_PRINT(vccString); DEBUG_PRINTLN(F("V\n"));
+        this_success = mqttClient.publish(eeprommem_config.data.mqttBatteryTopic, vccString.c_str(), false);
+      #else
+        if (vcc < eeprommem_config.data.vcc_error_min_read)  {
+          DEBUG_PRINT(F("MQTT publish ")); DEBUG_PRINT(eeprommem_config.data.mqttBatteryTopic); DEBUG_PRINTLN(F(" nok"));
+          this_success = mqttClient.publish(eeprommem_config.data.mqttBatteryTopic, "nok", false);
+        } else {
+          DEBUG_PRINT(F("MQTT publish ")); DEBUG_PRINT(eeprommem_config.data.mqttBatteryTopic); DEBUG_PRINTLN(F(" ok"));
+          this_success = mqttClient.publish(eeprommem_config.data.mqttBatteryTopic, "ok", false);
+        }
+      #endif
       success &= this_success;
       if (this_success) {DEBUG_BY_LEVEL_PRINTLN(4,F("MQTT publish success"));} else {DEBUG_PRINTLN(F("MQTT publish error"));}
     } else {
@@ -825,7 +868,7 @@ int mailUpdate(uint8_t mail_type_status0_sensor1, uint16_t vcc, uint16_t gpio_no
           subject = String(eeprommem_config.data.hostname) + String(F(" is "));
           subject += (gpio_now & (1<<PIN_SENSOR_STATE)) ? String(F("closed")) : String(F("open"));
           subject += String(F(", battery is "));
-          subject += (vcc < VCC_ERROR_MIN_V)?String(F("empty")):String(F("ok"));
+          subject += (vcc < eeprommem_config.data.vcc_error_min_read)?String(F("empty")):String(F("ok"));
           break;
       }
       if (body_prefix) body+=(*body_prefix);
@@ -858,7 +901,12 @@ int mailUpdate(uint8_t mail_type_status0_sensor1, uint16_t vcc, uint16_t gpio_no
 
       TASK_STAT_UPDATE(rtcmem_state.data.mailStat, mailsuccess, TOC);
     }
-    return (mailsuccess)?0:1;
+    if (mailsuccess) {
+      rtcmem_token.state &= ~STATE_ERROR_ALL;
+      return 0;
+    } else {
+      return 1;
+    }
   } else {
     DEBUG_PRINTLN(F("No SMTP server setup"));
     return -1;
@@ -912,180 +960,183 @@ void setup() {
       rtcmem_write_token();
     }
   }
-
-  if (rtcmem_token.state & STATE_LONG_SLEEP) {
-    INCSAT(rtcmem_token.sleep_cnt_wo_wifi);
-    if (rtcmem_token.sleep_cnt_wo_wifi>=MQTT_SENSOR_UPDATE_HOURS) {
-      rtcmem_token.state |= STATE_TASK_SENSOR_UPDATE;
+  if (!(rtcmem_token.state & STATE_SHUTDOWN_VCC)) {
+    if (rtcmem_token.state & STATE_LONG_SLEEP) {
+      INCSAT(rtcmem_token.sleep_cnt_wo_wifi);
+      if (rtcmem_token.sleep_cnt_wo_wifi>=MQTT_SENSOR_UPDATE_HOURS) {
+        rtcmem_token.state |= STATE_TASK_SENSOR_UPDATE;
+      }
     }
-  }
 
-  rtcmem_token.state |= STATE_TASKS_ALWAYS_ONCE;
-  bool rfon = (rtcmem_token.state & STATE_RFON);
+    rtcmem_token.state |= STATE_TASKS_ALWAYS_ONCE;
+    bool rfon = (rtcmem_token.state & STATE_RFON);
+    bool buzzerErrorAlert = (rtcmem_token.state & STATE_TASK_CONFIG_PORTAL) != 0;
 
-  DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
-  uint16_t vcc=0;
-  if (rfon) {
-    handle_rfon();
-    rtcmem_token.state |= STATE_TASK_SENSOR_UPDATE; // if RF is on send status update
-    // get battery voltage
-    vcc = ESP.getVcc();
-    DEBUG_PRINT(F("VCC = ")); DEBUG_PRINT((float)vcc/VCC_READ_1V); DEBUG_PRINTLN(F("V"));
-  }
+    DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
+    uint16_t vcc=0;
+    if (rfon) {
+      handle_rfon();
+      rtcmem_token.state |= STATE_TASK_SENSOR_UPDATE; // if RF is on send status update
+      // get battery voltage
+      vcc = ESP.getVcc();
+      DEBUG_PRINT(F("VCC = ")); DEBUG_PRINT((float)vcc/VCC_READ_1V); DEBUG_PRINTLN(F("V"));
+    }
 
-  String no_mqtt_sensor_history_mail;
-  DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
-  {
-    uint32_t task_watch = 0;
-    uint8_t task_loop_wd = (rfon)?10:1;
-    WiFiClient wclient;
-    PubSubClient mqttClient(wclient);
+    String no_mqtt_sensor_history_mail;
+    DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
+    {
+      uint32_t task_watch = 0;
+      uint8_t task_loop_wd = (rfon)?10:1;
+      WiFiClient wclient;
+      PubSubClient mqttClient(wclient);
 
-    do { // loop until task vector is zero or stable
-      TIC;
-      DEBUG_PRINT(F("Task loop (task_loop_wd=")); DEBUG_PRINT(task_loop_wd); DEBUG_PRINT(F("): rtcmem_token.state = 0b")); DEBUG_PRINT(u20binstr(rtcmem_token.state)); DEBUG_PRINT(F(", task_watch = 0b")); DEBUG_PRINTLN(u20binstr(task_watch));
-      task_watch = rtcmem_token.state;
+      do { // loop until task vector is zero or stable
+        TIC;
+        DEBUG_PRINT(F("Task loop (task_loop_wd=")); DEBUG_PRINT(task_loop_wd); DEBUG_PRINT(F("): rtcmem_token.state = 0b")); DEBUG_PRINT(u20binstr(rtcmem_token.state)); DEBUG_PRINT(F(", task_watch = 0b")); DEBUG_PRINTLN(u20binstr(task_watch));
+        task_watch = rtcmem_token.state;
 
-      if (rfon) { // handle tasks that need RFON
-        // if WiFi is not connected yet...
-        DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
-        if (WiFi.status() != WL_CONNECTED) connectWiFi();
-
-        if (WiFi.status() == WL_CONNECTED) {
-          // WiFi is connected now
-          delay(0);
-          //MQTT update
+        if (rfon) { // handle tasks that need RFON
+          // if WiFi is not connected yet...
           DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
-          if (rtcmem_token.state & STATE_TASK_SENSOR_ALERT) {
-            rtcmem_token.state &= ~STATE_TASK_SENSOR_UPDATE;
-            if (~(rtcmem_token.state & STATE_TASK_SENSOR_ALERT_NO_CHANGE)) INCSAT(rtcmem_state.data.sensorChangeCnt);
-            if (eeprommem_config.data.mqttHostname[0]!='\0') {
-              mqttUpdate(mqttClient, vcc);
-            } else {
-              rtcmem_token.gpio_last = rtcmem_token.gpio_next;
-              if (no_mqtt_sensor_history_mail.length()) no_mqtt_sensor_history_mail += F(", ");
-              if (rtcmem_token.state & STATE_TASK_SENSOR_ALERT_NO_CHANGE)
-                no_mqtt_sensor_history_mail += F("update");
-              else
-                no_mqtt_sensor_history_mail += (rtcmem_token.state & STATE_TASK_SENSOR_ALERT_OPEN)?F("open"):F("closed");
-              rtcmem_token.state &= ~STATE_TASK_SENSOR_ALERT;
-              rtcmem_token.state |= STATE_TASK_SEND_MAIL_SENSOR_UPDATE;
+          if (WiFi.status() != WL_CONNECTED) connectWiFi();
+
+          if (WiFi.status() == WL_CONNECTED) {
+            // WiFi is connected now
+            delay(0);
+            //MQTT update
+            DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
+            if (rtcmem_token.state & STATE_TASK_SENSOR_ALERT) {
+              rtcmem_token.state &= ~STATE_TASK_SENSOR_UPDATE;
+              if (~(rtcmem_token.state & STATE_TASK_SENSOR_ALERT_NO_CHANGE)) INCSAT(rtcmem_state.data.sensorChangeCnt);
+              if (eeprommem_config.data.mqttHostname[0]!='\0') {
+                mqttUpdate(mqttClient, vcc);
+              } else {
+                rtcmem_token.gpio_last = rtcmem_token.gpio_next;
+                if (no_mqtt_sensor_history_mail.length()) no_mqtt_sensor_history_mail += F(", ");
+                if (rtcmem_token.state & STATE_TASK_SENSOR_ALERT_NO_CHANGE)
+                  no_mqtt_sensor_history_mail += F("update");
+                else
+                  no_mqtt_sensor_history_mail += (rtcmem_token.state & STATE_TASK_SENSOR_ALERT_OPEN)?F("open"):F("closed");
+                rtcmem_token.state &= ~STATE_TASK_SENSOR_ALERT;
+                rtcmem_token.state |= STATE_TASK_SEND_MAIL_SENSOR_UPDATE;
+              }
             }
           }
         }
-      }
 
-      // check sensor status if not yet pending
-      DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
-      DEBUG_PRINTLN(F("GPIO check"));
-      if (((rtcmem_token.gpio_last ^ (uint16_t) gpio_now) & (1<<PIN_SENSOR_STATE))||(rtcmem_token.state & STATE_TASK_SENSOR_UPDATE)) {
-        rtcmem_token.state &= ~STATE_TASK_SENSOR_UPDATE;
-        if (rtcmem_token.state & STATE_TASK_SENSOR_ALERT) {
-          DEBUG_PRINTLN(F("Sensor state change/update detected but pending"));
-        } else {
-          if ((rtcmem_token.gpio_last ^ (uint16_t) gpio_now) & (1<<PIN_SENSOR_STATE)) {
-            DEBUG_PRINTLN(F("Sensor state change detected"));
-            rtcmem_token.state &= ~STATE_TASK_SENSOR_ALERT_NO_CHANGE;
+        // check sensor status if not yet pending
+        DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
+        DEBUG_PRINTLN(F("GPIO check"));
+        if (((rtcmem_token.gpio_last ^ (uint16_t) gpio_now) & (1<<PIN_SENSOR_STATE))||(rtcmem_token.state & STATE_TASK_SENSOR_UPDATE)) {
+          rtcmem_token.state &= ~STATE_TASK_SENSOR_UPDATE;
+          if (rtcmem_token.state & STATE_TASK_SENSOR_ALERT) {
+            DEBUG_PRINTLN(F("Sensor state change/update detected but pending"));
+            buzzerErrorAlert = true;
           } else {
-            DEBUG_PRINTLN(F("Sensor state update requested"));
-            rtcmem_token.state |= STATE_TASK_SENSOR_ALERT_NO_CHANGE;
+            if ((rtcmem_token.gpio_last ^ (uint16_t) gpio_now) & (1<<PIN_SENSOR_STATE)) {
+              DEBUG_PRINTLN(F("Sensor state change detected"));
+              buzzerErrorAlert = true;
+              rtcmem_token.state &= ~STATE_TASK_SENSOR_ALERT_NO_CHANGE;
+            } else {
+              DEBUG_PRINTLN(F("Sensor state update requested"));
+              rtcmem_token.state |= STATE_TASK_SENSOR_ALERT_NO_CHANGE;
+            }
+            rtcmem_token.gpio_next = (uint16_t) gpio_now;
+            rtcmem_token.state |= (rtcmem_token.gpio_next & (1<<PIN_SENSOR_STATE)) ? STATE_TASK_SENSOR_ALERT_CLOSED : STATE_TASK_SENSOR_ALERT_OPEN;
           }
-          rtcmem_token.gpio_next = (uint16_t) gpio_now;
-          rtcmem_token.state |= (rtcmem_token.gpio_next & (1<<PIN_SENSOR_STATE)) ? STATE_TASK_SENSOR_ALERT_CLOSED : STATE_TASK_SENSOR_ALERT_OPEN;
+        }
+        gpio_now = READ_PERI_REG(0x60000318);
+        task_loop_wd--;
+        DEBUG_PRINTLN(F("Task loop iteration done"));
+      } while ((task_loop_wd) && (rtcmem_token.state & (~task_watch) & STATE_TASKS));
+
+      DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
+      DEBUG_PRINT(F("Task loop finished (task_loop_wd=")); DEBUG_PRINT(task_loop_wd); DEBUG_PRINT(F("): rtcmem_token.state = 0b")); DEBUG_PRINTLN(u20binstr(rtcmem_token.state));
+      if (mqttClient.connected()) mqttClient.disconnect();
+      if (wclient.connected()) wclient.stopAll();
+    }
+    // single time tasks having WiFi connected
+    if (WiFi.status() == WL_CONNECTED) {
+      // restore RTC from MQTT
+      DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
+      if (rtcmem_token.state & STATE_TASK_MQTT_RTCMEM_RESTORE) mqttSaveRestoreRtcMem(1);
+
+      // OTA update
+      DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
+      if (rtcmem_state.data.httpOTAUpdateDwnCntHours==0) httpUdateServerCheck(vcc);
+
+      // save RTC to MQTT
+      DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
+      if ((!(rtcmem_token.state & STATE_TASK_MQTT_RTCMEM_RESTORE)) && (rtcmem_state.data.rtcmemSaveToMqttDwnCntHours==0)) mqttSaveRestoreRtcMem(0);
+
+      // Mail sensor update
+      DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
+      if (rtcmem_token.state & STATE_TASK_SEND_MAIL_SENSOR_UPDATE) {
+        int mailresult = mailUpdate(1, vcc, (uint16_t) gpio_now, &no_mqtt_sensor_history_mail);
+        if (mailresult == 0) {
+          rtcmem_token.state &= ~STATE_TASK_SEND_MAIL_SENSOR_UPDATE;
+          blinker_start(2,50,1,0);
+        } else {
+          if (mailresult==-1) TASK_STAT_UPDATE(rtcmem_state.data.mailStat, false, 0);
+          blinker_start(10,50,1,0);
+          delay(1000);
         }
       }
-      gpio_now = READ_PERI_REG(0x60000318);
-      task_loop_wd--;
-      DEBUG_PRINTLN(F("Task loop iteration done"));
-    } while ((task_loop_wd) && (rtcmem_token.state & (~task_watch) & STATE_TASKS));
 
-    DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
-    DEBUG_PRINT(F("Task loop finished (task_loop_wd=")); DEBUG_PRINT(task_loop_wd); DEBUG_PRINT(F("): rtcmem_token.state = 0b")); DEBUG_PRINTLN(u20binstr(rtcmem_token.state));
-    if (mqttClient.connected()) mqttClient.disconnect();
-    if (wclient.connected()) wclient.stopAll();
-  }
-  // single time tasks having WiFi connected
-  if (WiFi.status() == WL_CONNECTED) {
-    // restore RTC from MQTT
-    DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
-    if (rtcmem_token.state & STATE_TASK_MQTT_RTCMEM_RESTORE) mqttSaveRestoreRtcMem(1);
+      // Mail status update
+      DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
+      if ((rtcmem_token.state & STATE_TASK_SEND_MAIL_STATUS_UPDATE) && (mailUpdate(0, vcc, (uint16_t) gpio_now)!=1)) rtcmem_token.state &= ~STATE_TASK_SEND_MAIL_STATUS_UPDATE;
 
-    // OTA update
-    DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
-    if (rtcmem_state.data.httpOTAUpdateDwnCntHours==0) httpUdateServerCheck(vcc);
-
-    // save RTC to MQTT
-    DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
-    if ((!(rtcmem_token.state & STATE_TASK_MQTT_RTCMEM_RESTORE)) && (rtcmem_state.data.rtcmemSaveToMqttDwnCntHours==0)) mqttSaveRestoreRtcMem(0);
-
-    // Mail sensor update
-    DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
-    if (rtcmem_token.state & STATE_TASK_SEND_MAIL_SENSOR_UPDATE) {
-      int mailresult = mailUpdate(1, vcc, (uint16_t) gpio_now, &no_mqtt_sensor_history_mail);
-      if (mailresult == 0) {
-        rtcmem_token.state &= ~STATE_TASK_SEND_MAIL_SENSOR_UPDATE;
-        blinker_start(2,50,1,0);
-      } else {
-        if (mailresult==-1) TASK_STAT_UPDATE(rtcmem_state.data.mailStat, false, 0);
-        blinker_start(10,50,1,0);
-        delay(1000);
-      }
+      // all WiFi done
+      WiFi.disconnect( true );
     }
 
-    // Mail status update
-    DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
-    if ((rtcmem_token.state & STATE_TASK_SEND_MAIL_STATUS_UPDATE) && (mailUpdate(0, vcc, (uint16_t) gpio_now)!=1)) rtcmem_token.state &= ~STATE_TASK_SEND_MAIL_STATUS_UPDATE;
-
-    // all WiFi done
-    WiFi.disconnect( true );
-  }
-
-  if (rfon) {
     // check vcc and error counters for buzzer or mail attention
+    checkForErrors(vcc, rfon, buzzerErrorAlert);
+
+    TIC;
     DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
-    checkForErrors(vcc);
-  }
 
-  TIC;
-  DEBUG_BY_LEVEL_PRINT(3,F("ESP.getFreeHeap(@line ")); DEBUG_BY_LEVEL_PRINT(3,__LINE__); DEBUG_BY_LEVEL_PRINT(3,F(") = ")); DEBUG_BY_LEVEL_PRINTLN(3, ESP.getFreeHeap());
+    uint32_t next_sleeptime;
+    RFMode next_rfon;
+    if (rfon || ((rtcmem_token.state & STATE_TASKS_ACQUIRE_RF)==0)) {
+      next_sleeptime = DEEP_SLEEP_LONG_US_FF;
+      rtcmem_token.state |= STATE_LONG_SLEEP;
+    } else {
+      next_sleeptime = DEEP_SLEEP_SHORT_US;
+      rtcmem_token.state &= ~STATE_LONG_SLEEP;
+    }
+    if (rtcmem_token.state & STATE_TASKS_ACQUIRE_RF) {
+      next_rfon = WAKE_RF_DEFAULT; //WAKE_RF_DEFAULT; // WAKE_RFCAL;
+      rtcmem_token.state |= STATE_RFON;
+    } else {
+      next_rfon = WAKE_RF_DISABLED;
+      rtcmem_token.state &= ~STATE_RFON;
+    }
+    DEBUG_PRINT(F("Next deep sleep time = ")); DEBUG_PRINT(next_sleeptime);
+    DEBUG_PRINT(F(", NextRFON state = ")); DEBUG_PRINTLN(next_rfon);
 
-  uint32_t next_sleeptime;
-  if (rfon || ((rtcmem_token.state & STATE_TASKS_ACQUIRE_RF)==0)) {
-    next_sleeptime = DEEP_SLEEP_LONG_US_FF;
-    rtcmem_token.state |= STATE_LONG_SLEEP;
+    if (rfon) {
+      TASK_STAT_UPDATE(rtcmem_state.data.EspWWifiStat, (next_rfon == WAKE_RF_DISABLED), millis()+MILLIS_OFFSET_WRF);
+      rtcmem_write_state();
+    } else {
+      INCSAT(rtcmem_token.EspWoWifiStat_cnt);
+      UADDSAT(rtcmem_token.EspWoWifiStat_millis,millis()+MILLIS_OFFSET_WORF);
+    }
+    rtcmem_write_token();
+
+    DEBUG_BY_LEVEL_PRINT(0,F("Going for deep sleep @")); DEBUG_BY_LEVEL_PRINT(0,millis()); DEBUG_BY_LEVEL_PRINT(0,F(" ms: rtcmem_token.state = 0b")); DEBUG_BY_LEVEL_PRINTLN(0,u20binstr(rtcmem_token.state));
+
+    // clear serial FIFOs for immediate sleep
+    DEBUG_BY_LEVEL(0, delay(10)); // write out some more of my own logging
+    DEBUG_BY_LEVEL(0, SET_PERI_REG_MASK(UART_CONF0(0), UART_TXFIFO_RST)); //RESET FIFO
+    DEBUG_BY_LEVEL(0, CLEAR_PERI_REG_MASK(UART_CONF0(0), UART_TXFIFO_RST)); //RESET FIFO
+
+    ESP.deepSleep(next_sleeptime, next_rfon);
   } else {
-    next_sleeptime = DEEP_SLEEP_SHORT_US;
-    rtcmem_token.state &= ~STATE_LONG_SLEEP;
+    // never wake up again to drain least current for undervoltage protection
+    ESP.deepSleep(0, WAKE_RF_DISABLED);
   }
-  DEBUG_PRINT(F("Next deep sleep time = ")); DEBUG_PRINT(next_sleeptime);
-
-  RFMode next_rfon;
-  if (rtcmem_token.state & STATE_TASKS_ACQUIRE_RF) {
-    next_rfon = WAKE_RF_DEFAULT; //WAKE_RF_DEFAULT; // WAKE_RFCAL;
-    rtcmem_token.state |= STATE_RFON;
-  } else {
-    next_rfon = WAKE_RF_DISABLED;
-    rtcmem_token.state &= ~STATE_RFON;
-  }
-  DEBUG_PRINT(F(", NextRFON state = ")); DEBUG_PRINTLN(next_rfon);
-
-  if (rfon) {
-    TASK_STAT_UPDATE(rtcmem_state.data.EspWWifiStat, (next_rfon == WAKE_RF_DISABLED), millis()+MILLIS_OFFSET_WRF);
-    rtcmem_write_state();
-  } else {
-    INCSAT(rtcmem_token.EspWoWifiStat_cnt);
-    UADDSAT(rtcmem_token.EspWoWifiStat_millis,millis()+MILLIS_OFFSET_WORF);
-  }
-  rtcmem_write_token();
-
-  DEBUG_BY_LEVEL_PRINT(0,F("Going for deep sleep @")); DEBUG_BY_LEVEL_PRINT(0,millis()); DEBUG_BY_LEVEL_PRINT(0,F(" ms: rtcmem_token.state = 0b")); DEBUG_BY_LEVEL_PRINTLN(0,u20binstr(rtcmem_token.state));
-
-  // clear serial FIFOs for immediate sleep
-  DEBUG_BY_LEVEL(0, delay(10)); // write out some more of my own logging
-  DEBUG_BY_LEVEL(0, SET_PERI_REG_MASK(UART_CONF0(0), UART_TXFIFO_RST)); //RESET FIFO
-  DEBUG_BY_LEVEL(0, CLEAR_PERI_REG_MASK(UART_CONF0(0), UART_TXFIFO_RST)); //RESET FIFO
-
-  ESP.deepSleep(next_sleeptime, next_rfon);
 }
 
 void loop() {}

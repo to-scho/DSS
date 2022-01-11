@@ -28,7 +28,7 @@ bool rtcmem_write_token(bool set_fingerprint) {
 }
 
 bool rtcmem_write_token() {
-  rtcmem_write_token(true);
+  return rtcmem_write_token(true);
 }
 
 bool rtcmem_read_token() {
@@ -73,7 +73,7 @@ bool rtcmem_write_state(bool calc_crc32) {
 };
 
 bool rtcmem_write_state() {
-  rtcmem_write_state(true);
+  return rtcmem_write_state(true);
 }
 
 bool rtcmem_read_state() {
